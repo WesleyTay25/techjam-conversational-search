@@ -1,0 +1,12 @@
+# Core pipeline runs on the Python standard library plus numpy/scikit-learn.
+# Everything here is CPU-only, in-memory, and offline at scoring time.
+numpy>=1.26
+scikit-learn>=1.4
+
+# Optional: LLM semantic reranking layer (src/rank/llm_reranker.py).
+# Only imported when TECHJAM_LLM=1. The offline path never touches it.
+# anthropic>=0.40
+
+# Optional: sentence-transformers dense upgrade (TECHJAM_DENSE=st).
+# Adds ~2 GB of dependencies -- only enable if it beats TF-IDF+SVD on the dev slice.
+# sentence-transformers>=3.0
