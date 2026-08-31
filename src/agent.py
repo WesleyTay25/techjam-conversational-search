@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Sequence
@@ -104,6 +105,18 @@ class Agent:
             from src.retrieval.dense import DenseRoute
 
             return DenseRoute(self.products)
+        except ImportError as error:
+            # Name the interpreter: this failure is almost always "ran with the
+            # wrong python", not a genuinely missing dependency, and the bare
+            # ModuleNotFoundError sends people hunting for the latter.
+            LOGGER.warning(
+                "dense route unavailable (%s); running on 3 routes. "
+                "Interpreter is %s -- if that is not .venv/bin/python, activate "
+                "the venv or run `pip install -r requirements.txt` for it.",
+                error,
+                sys.executable,
+            )
+            return None
         except Exception as error:  # noqa: BLE001
             LOGGER.warning("dense route unavailable (%s); running on 3 routes", error)
             return None
