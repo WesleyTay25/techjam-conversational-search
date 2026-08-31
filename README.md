@@ -86,6 +86,84 @@ Two escape hatches, both off by default:
 The reported configuration is fully offline and deterministic: no RNG on the
 response path, and two runs produce byte-identical `results.json`.
 
+## Results
+
+Full 200-session public set, offline configuration, `python3 -m evaluator.local_evaluator`.
+
+| Metric | Weak BM25 baseline | Ours | |
+|---|---|---|---|
+| **TechnicalScore** | 0.10671 | **0.68569** | **6.4x** |
+| Hit Rate@10 | 0.125 | 0.780 | 6.2x |
+| MRR | 0.068034 | 0.518633 | 7.6x |
+| MTTC | 9.81 | 3.995 | -5.8 turns |
+
+The baseline reproduces exactly (`TECHJAM_BASELINE=1` -> 0.10671), so the
+comparison is against a valid control. Two consecutive full runs produced
+byte-identical `results.json`.
+
+Per scenario:
+
+| Scenario | n | Hit Rate@10 | MRR | MTTC |
+|---|---|---|---|---|
+| browsing | 80 | 0.850 | 0.5767 | 3.26 |
+| buying | 80 | 0.800 | 0.5327 | 3.13 |
+| boundary | 10 | 0.800 | 0.4867 | 5.10 |
+| intent_override | 30 | **0.533** | 0.3370 | **7.90** |
+
+Intent override is our weakest track by a wide margin and is where the
+remaining headroom is. Part of its MTTC floor is structural — the harness gates
+its hit check on `override_applied`, so those sessions cannot convert before
+turn 3-4 — but losing 14 of 30 is not structural.
+
+## Ablation: the dense route earns nothing
+
+We report this because it is the result we did not want. **The dense TF-IDF+SVD
+route adds no measurable recall.** Toggled on a full 200-session run:
+
+| | Without dense | With dense | Delta |
+|---|---|---|---|
+| TechnicalScore | 0.685509 | 0.685690 | **+0.000181** |
+| Hit Rate@10 | 0.7800 | 0.7800 | **0.0000** |
+| MRR | 0.515696 | 0.518633 | +0.002937 |
+| MTTC | 3.960 | 3.995 | **+0.035 (worse)** |
+
+Hit rate is identical to four decimal places, and identical *per scenario across
+all four tracks* — the dense route did not convert a single session that the
+other routes missed. It only reshuffles ranking at the margin, and it makes MTTC
+slightly worse.
+
+It is not free:
+
+- **33.1 s of the 39.7 s agent construction** — 83% of startup — is the dense
+  index build.
+- Per-session latency rises from 286 ms to 312 ms (~9%).
+
+**Why it comes out flat.** Two measured reasons, and the first is the
+interesting one:
+
+1. The pool has already collapsed by the time dense would speak. Across 755
+   turns the median candidate pool is **5 products** (p90 338). Branch B's own
+   `dynamic_truncation` switches the dense route off below a 200-row pool, so
+   dense actually ran on **111 of 755 turns (14.7%)** and was skipped on 644.
+2. On the 14.7% of turns where it *did* run, it was largely redundant: it had
+   independently ranked **7.3 of the final top 10** on average. It agrees with
+   the lexical and constraint routes rather than surfacing anything new.
+
+Read the right way, this is a result *about the pool, not about semantics*: it
+is direct evidence for the project's central bet that deciding which few hundred
+rows to rank matters more than how you rank them. Category-tail pooling plus the
+exact-constraint index leave a median of five candidates, and there is no recall
+left for a semantic route to add.
+
+**We are keeping it anyway, and disclosing the cost.** The risk register calls
+for graded backoff — exact key -> token overlap -> dense cosine — precisely
+because the private 800 sessions may ship real intent cards whose constraint
+strings are *not* byte-identical to catalog text. On a set where exact matching
+degrades, dense is the fallback that stops a route from being a single point of
+failure. What this ablation establishes is that on the public set it earns
+nothing today, and that if startup time ever becomes a constraint, this is the
+first component to cut.
+
 ## Disclosure
 
 - **Model choice:** none on the scored path. The offline pipeline is pure
@@ -102,16 +180,21 @@ response path, and two runs produce byte-identical `results.json`.
 
 ## Limitations and Known Gaps
 
-- **No public-set score is reported yet.** `data/catalog.jsonl` is distributed
-  via the participant-kit release and is not in this repo, so the integrated
-  pipeline has been verified end to end against `tests/fixtures/mini_catalog.jsonl`
-  only. The 12-product fixture makes a top-10 nearly free, so its metrics prove
-  *integration*, not performance. The full 200-session run is the next gate.
-- **The LLM rerank layer is a pass-through.** It is wired, contract-conformant,
+- **Intent override converts only 53%** against 80-85% on every other track.
+  This is the single largest remaining lever: bringing it to parity is worth
+  roughly +0.04 TechnicalScore, which would clear the M4 target of 0.70.
+- **Turn 1 breaches the 150 ms latency budget** on some sessions (150-209 ms
+  observed). It is first-turn warmup only, not steady-state per-turn cost, but
+  the harness may enforce timeouts.
+- **The dense route earns nothing measurable** and costs 83% of startup — see
+  the ablation above. Retained as private-set insurance, not as a scoring
+  component.
+- **The LLM rerank layer is a pass-through.** Wired, contract-conformant,
   opt-in, and safe, but `_call_model` still returns `[]`. Owned by Branch E.
-- **`tools/` is a skeleton.** The ablation, paraphrase-stress, slice, and
-  profiling harnesses the blueprint calls for are not built yet, so there is no
-  ablation table or latency profile.
+- **`tools/` is a skeleton.** The paraphrase-stress, slice, and profiling
+  harnesses the blueprint calls for are not built, so there is no systematic
+  paraphrase-robustness number or latency profile. The dense ablation above was
+  produced by hand.
 
 ## Contributions
 
