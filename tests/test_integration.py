@@ -88,8 +88,10 @@ class AgentContractTest(unittest.TestCase):
                 self.assertTrue(payload["recommendations"])
 
     def test_respond_without_reset_still_answers(self) -> None:
-        payload = self.agent.respond("never-reset", BUYING, 1, TOP_K)
+        with self.assertLogs("src.agent", level="WARNING") as captured:
+            payload = self.agent.respond("never-reset", BUYING, 1, TOP_K)
         self.assertTrue(payload["recommendations"])
+        self.assertIn("respond before reset", "\n".join(captured.output))
 
     def test_top_k_is_honoured(self) -> None:
         self.agent.reset("s-topk", PROFILE)
@@ -137,8 +139,18 @@ class DegradationTest(unittest.TestCase):
         self.agent = Agent(FIXTURE)
         self.agent.reset("s-degraded", PROFILE)
 
-    def _assert_still_answers(self) -> None:
-        payload = self.agent.respond("s-degraded", BUYING, 1, TOP_K)
+    def _assert_still_answers(self, expect_warning: bool = True) -> None:
+        """Run a turn and require a full page out of the degraded pipeline.
+
+        The injected failure is expected to *log*, so the log is captured and
+        asserted rather than left to print. A passing run that prints "failed"
+        five times trains people to ignore the word.
+        """
+        if expect_warning:
+            with self.assertLogs("src.agent", level="WARNING"):
+                payload = self.agent.respond("s-degraded", BUYING, 1, TOP_K)
+        else:
+            payload = self.agent.respond("s-degraded", BUYING, 1, TOP_K)
         self.assertEqual(
             len(payload["recommendations"]), min(TOP_K, len(self.agent.products))
         )
@@ -154,7 +166,7 @@ class DegradationTest(unittest.TestCase):
 
     def test_survives_a_missing_dense_route(self) -> None:
         self.agent.dense = None
-        self._assert_still_answers()
+        self._assert_still_answers(expect_warning=False)
 
     def test_survives_a_broken_reranker_and_policy(self) -> None:
         class Broken:
