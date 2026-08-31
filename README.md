@@ -2,6 +2,129 @@
 
 Build an AI shopping agent that asks useful follow-up questions and recommends the customer's hidden target product within at most 10 turns.
 
+---
+
+# Our Submission
+
+> Team documentation. Everything below `## What You Receive` is the organizer's
+> original participant kit and is unmodified.
+
+## Overview
+
+The starter agent throws the customer's words at BM25 and guesses: Hit Rate
+12.5%, MTTC 9.81. We replace guessing with **elimination**, on two bets:
+
+1. **The pool matters more than the ranking.** Every opening message contains
+   the target's own coarse category path (`Women Dresses`), and disclosed
+   constraints are literal catalog text. Both are hash lookups, not searches, so
+   they collapse 50,000 rows to a few hundred before a single score is computed.
+2. **Only ask questions that cut the pile.** Every askable attribute is scored
+   by expected information gain against the *live* pool each turn, rather than
+   following a fixed script. And we never ask empty-handed: a question and ten
+   guesses cost the same single turn, so every response carries both.
+
+## Architecture
+
+```
+reset(session_id, profile)
+        |
+        v
++--------------------------- per-turn loop ----------------------------+
+|  message                                                             |
+|     v                                                                |
+|  [C] Intent router --> track: buying | browsing | override | boundary|
+|     v                                                                |
+|  [C] Slot extractor --> [C] State machine                            |
+|            accumulate / decay / ERASE-on-override --> DialogState    |
+|     +--------------+---------------+---------------+                 |
+|     v              v               v               v                 |
+|  [A] Constraint [A] Structured  [A] Lexical     [B] Dense            |
+|      exact-key      filters         BM25/FTS5       TF-IDF+SVD       |
+|     +--------------+---------------+---------------+                 |
+|            [B] Weighted RRF fusion + dynamic truncation              |
+|            [D] Feature reranker --> [E] optional LLM rerank          |
+|            top 10  +  [D] info-gain question policy                  |
+|     v                                                                |
+|  {message, ask_attribute, recommendations, usage}                    |
++----------------------------------------------------------------------+
+```
+
+| Module | Role |
+|---|---|
+| `src/agent.py` | Orchestrator — the `reset`/`respond` entry point |
+| `src/nlu/`, `src/dialog/state.py` | Track routing, verbatim slot extraction, state machine |
+| `src/catalog/constraint_index.py` | Exact-key constraint and category-tail indexes |
+| `src/retrieval/` | Lexical (FTS5/BM25), structured filters, dense TF-IDF+SVD, RRF fusion |
+| `src/dialog/question_policy.py` | Information-gain probe selection + cross-session bandit |
+| `src/rank/reranker.py` | Feature reranker with MMR diversification |
+| `src/rank/llm_reranker.py` | Opt-in LLM layer (`TECHJAM_LLM=1`), falls through when off |
+
+`starter/agent.py` is the harness entry point and simply delegates to
+`src/agent.py`.
+
+## Setup and Reproduction
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# The catalog is not in the repo; fetch it from the participant-kit release.
+gzip -dk catalog.jsonl.gz && mv catalog.jsonl data/catalog.jsonl
+shasum -a 256 -c SHA256SUMS
+
+python3 -m unittest discover tests      # 87 tests, no catalog needed
+python3 -m evaluator.local_evaluator --output results.json
+```
+
+Two escape hatches, both off by default:
+
+| Variable | Effect |
+|---|---|
+| `TECHJAM_BASELINE=1` | Routes the harness back to the original BM25 starter, so the M0 control score stays reproducible from the same command. |
+| `TECHJAM_LLM=1` | Enables the optional LLM rerank layer. Unset, nothing in the pipeline touches the network. |
+
+The reported configuration is fully offline and deterministic: no RNG on the
+response path, and two runs produce byte-identical `results.json`.
+
+## Disclosure
+
+- **Model choice:** none on the scored path. The offline pipeline is pure
+  Python + numpy/scikit-learn, so reported token usage is genuinely `0`.
+- **Optional layer:** `TECHJAM_LLM=1` targets `claude-haiku-4-5-20251001`,
+  bounded by a hard timeout and capped to a 20-candidate shortlist. Its model
+  call is not yet implemented (see Limitations), so it currently costs nothing.
+- **Latency:** the orchestrator budgets 150 ms per turn and logs a warning when
+  a turn exceeds it. All index construction happens once in `__init__`.
+- **Fallback behaviour:** every stage is individually guarded. A dead retrieval
+  route, a broken reranker, a failing question policy, or a missing numpy wheel
+  each degrade to the stage before them; `respond` never raises, because the
+  harness scores a thrown exception as a miss with no traceback.
+
+## Limitations and Known Gaps
+
+- **No public-set score is reported yet.** `data/catalog.jsonl` is distributed
+  via the participant-kit release and is not in this repo, so the integrated
+  pipeline has been verified end to end against `tests/fixtures/mini_catalog.jsonl`
+  only. The 12-product fixture makes a top-10 nearly free, so its metrics prove
+  *integration*, not performance. The full 200-session run is the next gate.
+- **The LLM rerank layer is a pass-through.** It is wired, contract-conformant,
+  opt-in, and safe, but `_call_model` still returns `[]`. Owned by Branch E.
+- **`tools/` is a skeleton.** The ablation, paraphrase-stress, slice, and
+  profiling harnesses the blueprint calls for are not built yet, so there is no
+  ablation table or latency profile.
+
+## Contributions
+
+| Branch | Scope |
+|---|---|
+| `feat/retrieval-lexical` | Constraint index with graded backoff, FTS5/BM25 route, structured filters |
+| `feat/retrieval-dense` | TF-IDF+SVD dense route, weighted RRF fusion, dynamic truncation |
+| `feat/dialog-state` | Two-layer intent router, verbatim slot extraction, state machine, override erasure, context distillation |
+| `policy-rerank` | Information-gain question policy, probe bandit, feature reranker with MMR |
+| `feat/llm-evalops` | LLM reranker scaffold, report and tooling skeleton |
+| Lead | Frozen contracts, catalog loader, orchestrator, harness wiring, integration tests |
+
+
 ## What You Receive
 
 - A frozen catalog of 50,000 products from the `Clothing_Shoes_and_Jewelry` category of Amazon Reviews 2023.

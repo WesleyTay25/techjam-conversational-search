@@ -194,6 +194,20 @@ class SlotExtractionTest(unittest.TestCase):
         # The verbatim string still reaches the constraint index.
         self.assertIn("budget around $49.99", state.raw_constraints)
 
+    def test_category_tail_stays_out_of_the_feature_key_set(self) -> None:
+        """`raw_constraints` feeds Branch A's feature/detail index only.
+
+        The category has its own field and its own index; putting it in both
+        makes `ConstraintIndex.candidate_pool` re-query the tail as a feature
+        string and risks intersecting the pool down to products that merely
+        mention it in their details.
+        """
+        machine = StateMachine()
+        state = machine.start("s", PROFILE)
+        machine.ingest(state, BROWSING_OPEN, 1)
+        self.assertEqual(state.category_tail, "Women Dresses")
+        self.assertNotIn("Women Dresses", state.raw_constraints)
+
     def test_category_tail_drops_the_trailing_clause(self) -> None:
         self.assertEqual(extract_category_tail(BROWSING_OPEN), "Women Dresses")
         machine = StateMachine()

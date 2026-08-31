@@ -276,6 +276,13 @@ class StateMachine:
                 self._merge(
                     state,
                     Slot(CATEGORY_ATTRIBUTE, tail, state.turn, confidence, True, 1.0),
+                    # `raw_constraints` is Branch A's *feature/detail* key set;
+                    # the category has its own field and its own index
+                    # (`by_category_tail`). Registering it in both makes
+                    # `candidate_pool` re-query the tail as a feature string,
+                    # which either no-ops or, worse, intersects the pool down to
+                    # whichever products happen to mention it in their details.
+                    register_raw=False,
                 )
 
         # 4. Price parses into a typed field; the verbatim string still becomes

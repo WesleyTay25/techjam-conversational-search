@@ -1,9 +1,31 @@
+"""Harness entry point. OWNER: Lead.
+
+`evaluator/local_evaluator.py` imports `Agent` from this module, and the
+organizer's private harness does the same, so this file is the seam between our
+pipeline and whatever runs it. It holds no logic of its own: `Agent` is the
+orchestrator in `src/agent.py`.
+
+Two escape hatches, both deliberate:
+
+* `TECHJAM_BASELINE=1` routes back to `BaselineAgent`, the original BM25
+  starter, so the M0 control number (technical_score 0.10671) stays
+  reproducible from the same command.
+* If the pipeline cannot be constructed at all -- a missing wheel, a corrupt
+  index -- we log and fall back to the baseline rather than failing to build.
+  A broken agent that raises in `__init__` scores zero on all 200 sessions;
+  the baseline scores 0.10671. Never trade the second for the first silently.
+"""
+
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 import sqlite3
 from pathlib import Path
+
+LOGGER = logging.getLogger(__name__)
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
@@ -32,8 +54,13 @@ def _terms(text: str) -> list[str]:
     ]
 
 
-class Agent:
-    """Editable weak baseline: stateless BM25 retrieval with no LLM dependency."""
+class BaselineAgent:
+    """The original weak baseline: stateless BM25, no state, no LLM.
+
+    Kept verbatim and reachable so M0's control number stays reproducible --
+    every comparison the team makes is against the 0.10671 this scores. Set
+    `TECHJAM_BASELINE=1` to route the harness back to it.
+    """
 
     def __init__(self, catalog_path: str | Path = "data/catalog.jsonl") -> None:
         self.catalog_path = Path(catalog_path)
@@ -100,3 +127,36 @@ class Agent:
             "recommendations": recommendations,
             "usage": {"prompt_tokens": 0, "completion_tokens": 0},
         }
+
+
+def _use_baseline() -> bool:
+    return os.environ.get("TECHJAM_BASELINE") == "1"
+
+
+class Agent:
+    """Delegates to the real pipeline; falls back to BM25 only if it cannot build."""
+
+    def __init__(self, catalog_path: str | Path = "data/catalog.jsonl") -> None:
+        self._impl = None
+        if not _use_baseline():
+            try:
+                from src.agent import Agent as PipelineAgent
+
+                self._impl = PipelineAgent(catalog_path)
+            except Exception as error:  # noqa: BLE001
+                LOGGER.error(
+                    "pipeline failed to build (%s); falling back to the BM25 baseline", error
+                )
+        if self._impl is None:
+            self._impl = BaselineAgent(catalog_path)
+
+    @property
+    def implementation(self) -> str:
+        """Which agent actually answered -- printed by the ablation tooling."""
+        return type(self._impl).__name__
+
+    def reset(self, session_id: str, user_profile: dict) -> None:
+        self._impl.reset(session_id, user_profile)
+
+    def respond(self, session_id: str, user_message: str, turn: int, top_k: int = 10) -> dict:
+        return self._impl.respond(session_id, user_message, turn, top_k)
